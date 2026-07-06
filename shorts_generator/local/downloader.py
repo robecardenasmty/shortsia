@@ -6,6 +6,7 @@ directly off disk.
 
 import os
 import re
+import shutil
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 from typing import Optional
@@ -21,20 +22,61 @@ def _import_ytdlp():
             "yt-dlp is required for --mode local. Install it with:\n"
             "    pip install -r requirements-local.txt"
         ) from e
+
     return yt_dlp
 
 
 def _format_for(fmt: str) -> str:
-    """Map our '720' / '1080' shorthand to a yt-dlp format selector."""
+    """Flexible yt-dlp format selector.
+
+    The previous selector was too strict because it required mp4 video
+    and m4a audio. Some YouTube videos do not expose that exact combination.
+    """
     try:
         height = int(fmt)
     except ValueError:
         height = 720
 
     return (
-        f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/"
-        f"best[height<={height}][ext=mp4]/best"
+        f"bestvideo[height<={height}]+bestaudio/"
+        f"best[height<={height}]/best"
     )
+
+
+def _get_writable_cookiefile() -> Optional[str]:
+    """Copy Render's read-only secret cookie file to /tmp.
+
+    Render secret files live in /etc/secrets and are read-only.
+    yt-dlp may try to update the cookie jar, so we copy it to /tmp first.
+    """
+    source_cookiefile = os.getenv("YTDLP_COOKIES_FILE")
+
+    print(f"[download/local] YTDLP_COOKIES_FILE={source_cookiefile}", flush=True)
+
+    if not source_cookiefile:
+        print("[download/local] no cookies file configured", flush=True)
+        return None
+
+    if not os.path.exists(source_cookiefile):
+        raise RuntimeError(
+            f"YTDLP_COOKIES_FILE is set, but the file does not exist: {source_cookiefile}"
+        )
+
+    size = os.path.getsize(source_cookiefile)
+    print(f"[download/local] source cookies size={size} bytes", flush=True)
+
+    with open(source_cookiefile, "r", encoding="utf-8", errors="ignore") as f:
+        first_line = f.readline().strip()
+
+    print(f"[download/local] cookies first line={first_line}", flush=True)
+
+    writable_cookiefile = "/tmp/cookies.txt"
+    shutil.copyfile(source_cookiefile, writable_cookiefile)
+    os.chmod(writable_cookiefile, 0o600)
+
+    print(f"[download/local] using writable cookies file: {writable_cookiefile}", flush=True)
+
+    return writable_cookiefile
 
 
 def _extract_youtube_video_id(source: str) -> Optional[str]:
@@ -142,22 +184,15 @@ def download_youtube_local(
         "noprogress": True,
     }
 
-    cookies_path = os.getenv("YTDLP_COOKIES_FILE")
+    cookies_file = _get_writable_cookiefile()
 
-    if cookies_path:
-        if not os.path.exists(cookies_path):
-            raise RuntimeError(
-                f"YTDLP_COOKIES_FILE is set, but the file does not exist: {cookies_path}"
-            )
-
-        print(f"[download/local] using cookies file: {cookies_path}", flush=True)
-        ydl_opts["cookiefile"] = cookies_path
+    if cookies_file:
+        ydl_opts["cookiefile"] = cookies_file
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(video_url, download=True)
         path = ydl.prepare_filename(info)
 
-        # merge_output_format may rename the extension after merge
         if not os.path.exists(path):
             stem, _ = os.path.splitext(path)
 
@@ -169,4 +204,5 @@ def download_youtube_local(
                     break
 
     print(f"[download/local] ready: {path}", flush=True)
+
     return path
