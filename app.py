@@ -12,7 +12,11 @@ st.write("Generador de clips verticales desde YouTube")
 
 url = st.text_input("Pega la URL de YouTube")
 
-num_clips = st.slider("Número de clips", 1, 10, 3)
+num_clips = st.selectbox(
+    "Número de clips",
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    index=2
+)
 
 aspect_ratio = st.selectbox(
     "Formato",
